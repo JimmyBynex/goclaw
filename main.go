@@ -23,6 +23,7 @@ func main() {
 	data, _ := os.ReadFile("config.yaml")
 	var cfg Config
 	yaml.Unmarshal(data, &cfg)
+
 	aiClient := openrouter.New(cfg.AI.APIKey, cfg.AI.Model)
 	ctx := context.Background()
 	handler := func(ctx context.Context, msg *telegram.Message) (<-chan string, <-chan error) {

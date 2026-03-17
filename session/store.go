@@ -42,6 +42,12 @@ func (s *FileStore) Get(key SessionKey) (*Session, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	//防止两个goroutine做无效功用，一个已经把cache重新存入，另一个就不用再重复读取了
+	if sess := s.cache[id]; sess != nil {
+		return sess, nil
+	}
+
 	res, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
 	//第一种情况是没有文件，返回空sess
 	if os.IsNotExist(err) {
