@@ -75,7 +75,7 @@ func (b *Bot) editMessage(ctx context.Context, chatID int64, messageID int, text
 }
 func (b *Bot) streamToTelegram(ctx context.Context, chatID int64, messageID int, textCh <-chan string, errCh <-chan error) {
 	var buf strings.Builder
-	ticker := time.NewTicker(300 * time.Millisecond)
+	ticker := time.NewTicker(600 * time.Millisecond)
 	defer ticker.Stop()
 
 	lastSent, current := "", ""
