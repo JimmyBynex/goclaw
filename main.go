@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"goclaw/internal/ai"
 	"goclaw/internal/ai/openrouter"
+	"goclaw/internal/gateway"
 	session "goclaw/internal/session"
 	"goclaw/internal/telegram"
 	"log"
@@ -29,6 +30,10 @@ type Config struct {
 		Dir          string `yaml:"dir"`
 		MaxIdleHours int    `yaml:"max_idle_hours"`
 	}
+	Gateway struct {
+		Port  int    `yaml:"port"`
+		Token string `yaml:"token"`
+	} `yaml:"gateway"`
 }
 
 func main() {
@@ -42,6 +47,20 @@ func main() {
 		log.Printf("[main]session.NewFileStore err: %v", err)
 	}
 	ctx := context.Background()
+
+	// 启动 Gateway
+	gw := gateway.New(gateway.Config{
+		Port:         cfg.Gateway.Port,
+		Token:        cfg.Gateway.Token,
+		SystemPrompt: cfg.AI.SystemPrompt,
+		MaxPairs:     cfg.AI.MaxContextPairs,
+	}, aiClient, store)
+	go func() {
+		if err := gw.Start(ctx); err != nil {
+			log.Printf("[main] gateway error: %v", err)
+		}
+	}()
+
 	handler := makeHandler(aiClient, cfg, store)
 	bot := telegram.New(cfg.Telegram.Token, handler)
 	bot.StartPolling(ctx)
