@@ -5,48 +5,40 @@ import (
 	"fmt"
 	"goclaw/internal/ai"
 	"goclaw/internal/ai/openrouter"
+	"goclaw/internal/config"
 	"goclaw/internal/gateway"
 	session "goclaw/internal/session"
 	"goclaw/internal/telegram"
 	"log"
-	"os"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
-type Config struct {
-	Telegram struct {
-		Token     string `yaml:"token"`
-		AccountID string `yaml:"account_id"`
-	} `yaml:"telegram"`
-	AI struct {
-		APIKey          string `yaml:"api_key"`
-		Model           string `yaml:"model"`
-		SystemPrompt    string `yaml:"system_prompt"`
-		MaxContextPairs int    `yaml:"max_context_pairs"`
-	} `yaml:"ai"`
-	Session struct {
-		Dir          string `yaml:"dir"`
-		MaxIdleHours int    `yaml:"max_idle_hours"`
-	}
-	Gateway struct {
-		Port  int    `yaml:"port"`
-		Token string `yaml:"token"`
-	} `yaml:"gateway"`
-}
-
 func main() {
-	data, _ := os.ReadFile("config.yaml")
-	var cfg Config
-	yaml.Unmarshal(data, &cfg)
+	cfgMgr, err := config.NewManager("config.yaml")
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+	cfg := cfgMgr.Get()
+	ctx := context.Background()
 
-	aiClient := openrouter.New(cfg.AI.APIKey, cfg.AI.Model)
+	cfgMgr.OnChange(func(old, new *config.Config) {
+		switch config.Diff(old, new) {
+		case config.ReloadNone:
+			log.Println("[config] hot update applied")
+		case config.ReloadChannel:
+			log.Println("[config] telegram config changed, restart required")
+		case config.ReloadGateway:
+			log.Println("[config] gateway config changed, restart required")
+		}
+	})
+
+	go cfgMgr.Watch(ctx)
+
+	aiClient := openrouter.New(cfg.AI.ApiKey, cfg.AI.Model)
 	store, err := session.NewFileStore(cfg.Session.Dir)
 	if err != nil {
 		log.Printf("[main]session.NewFileStore err: %v", err)
 	}
-	ctx := context.Background()
 
 	// 启动 Gateway
 	gw := gateway.New(gateway.Config{
@@ -61,20 +53,21 @@ func main() {
 		}
 	}()
 
-	handler := makeHandler(aiClient, cfg, store)
+	handler := makeHandler(aiClient, cfgMgr, store)
 	bot := telegram.New(cfg.Telegram.Token, handler)
 	bot.StartPolling(ctx)
 }
 
-func makeHandler(aiClient ai.Client, cfg Config, store session.Store) telegram.MessageHandler {
+func makeHandler(aiClient ai.Client, cfgMgr *config.Manager, store session.Store) telegram.MessageHandler {
 	return func(ctx context.Context, msg *telegram.Message) (<-chan string, <-chan error) {
+		cfg := cfgMgr.Get()
 		scope := session.ScopeDM
 		peerID := fmt.Sprintf("%d", msg.From.ID)
 		if msg.Chat.Type != "private" {
 			scope = session.ScopeGroup
 		}
 		key := session.SessionKey{
-			AccountID: cfg.Telegram.AccountID,
+			AccountID: cfg.Telegram.AccountId,
 			ChannelID: "telegram",
 			Scope:     scope,
 			PeerID:    peerID,
