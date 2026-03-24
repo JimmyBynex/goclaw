@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"goclaw/internal/ai"
+	"goclaw/internal/channel"
+	"goclaw/internal/config"
 	"goclaw/internal/session"
 	"log"
 	"net/http"
@@ -12,22 +14,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Config struct {
-	Port         int
-	Token        string
-	SystemPrompt string
-	MaxPairs     int
-}
-
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 type Gateway struct {
-	hub    *Hub    //管理链接
-	router *Router //如何处理链接的数据
-	auth   *Auth   //鉴权
+	hub    *Hub
+	router *Router
+	auth   *Auth
 	server *http.Server
+	chat   *ChatHandler
 }
 
 func (g *Gateway) ServerWS(w http.ResponseWriter, r *http.Request) {
@@ -56,29 +52,40 @@ func (g *Gateway) ServerWS(w http.ResponseWriter, r *http.Request) {
 	go client.writePump(conn)
 }
 
-func New(cfg Config, aiClient ai.Client, store session.Store) *Gateway {
+func New(cfgMgr *config.Manager, aiClient ai.Client, store session.Store) *Gateway {
+	cfg := cfgMgr.Get()
 	hub := NewHub()
 	router := NewRouter()
 
 	health := NewHealthHandler()
 	router.Register("health", health.Health)
 
-	chat := NewChatHandler(cfg.MaxPairs, aiClient, store, hub, cfg.SystemPrompt)
+	chat := NewChatHandler(aiClient, store, hub, cfgMgr, nil)
 	router.Register("chat.send", chat.Send)
 	router.Register("chat.history", chat.History)
 	router.Register("chat.abort", chat.Abort)
+
 	g := &Gateway{
 		hub:    hub,
 		router: router,
-		auth:   NewAuth(cfg.Token),
+		auth:   NewAuth(cfg.Gateway.Token),
+		chat:   chat,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", g.ServerWS)
 	g.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
+		Addr:    fmt.Sprintf(":%d", cfg.Gateway.Port),
 		Handler: mux,
 	}
 	return g
+}
+
+func (g *Gateway) SetChannelManager(chanMgr *channel.Manager) {
+	g.chat.chanMgr = chanMgr
+}
+
+func (g *Gateway) InboundHandler() channel.InBoundHandler {
+	return g.chat.InboundHandler()
 }
 
 func (g *Gateway) Start(ctx context.Context) error {
