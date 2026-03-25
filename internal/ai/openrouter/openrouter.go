@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"goclaw/internal/ai"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -46,21 +47,21 @@ func New(apiKey string, model string) *Client {
 }
 
 func (c *Client) StreamChat(ctx context.Context, message []ai.Message) (<-chan string, <-chan error) {
-	textch := make(chan string, 32)
-	errch := make(chan error, 1)
+	textCh := make(chan string, 32)
+	errCh := make(chan error, 1)
 	go func() {
-		defer close(errch)
-		defer close(textch)
+		defer close(errCh)
+		defer close(textCh)
 
-		error := c.Stream(ctx, message, textch)
+		error := c.Stream(ctx, message, textCh)
 		if error != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			errch <- error
+			errCh <- error
 		}
 	}()
-	return textch, errch
+	return textCh, errCh
 }
 
 // chan<-只写，<-chan只读
@@ -72,7 +73,10 @@ func (c *Client) Stream(ctx context.Context, message []ai.Message, textch chan<-
 	}
 
 	//json化
-	body, _ := json.Marshal(playload)
+	body, err := json.Marshal(playload)
+	if err != nil {
+		return err
+	}
 
 	//组装
 	req, err := http.NewRequestWithContext(ctx, "POST",
@@ -90,10 +94,12 @@ func (c *Client) Stream(ctx context.Context, message []ai.Message, textch chan<-
 	//实际请求
 	resp, err := c.http.Do(req)
 	if err != nil {
+		log.Printf("[openrouter] http error: %v", err)
 		return err
 	}
-
+	log.Printf("[openrouter] status: %d", resp.StatusCode)
 	//请求出错
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		var errBody struct {
 			Error struct {
@@ -134,6 +140,7 @@ func (c *Client) Stream(ctx context.Context, message []ai.Message, textch chan<-
 		}
 
 		content := chunk.Choices[0].Delta.Content
+		log.Printf("[openrouter] chunk: %s", content)
 		if content != "" {
 			//防止收到ctx退出的时候，防止textch <- content卡住
 			select {

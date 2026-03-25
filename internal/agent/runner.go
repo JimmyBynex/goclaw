@@ -34,6 +34,7 @@ func (a *Agent) runAttempt(
 	runID string,
 	eventCh chan<- AgentEvent,
 ) (*RunResult, error) {
+	log.Printf("[agent] runAttempt: provider=%s model=%s", modelRef.Provider, modelRef.Model)
 	client, err := ai.NewClient(modelRef.Provider, modelRef.APIkey,
 		modelRef.Model)
 	if err != nil {
@@ -44,16 +45,23 @@ func (a *Agent) runAttempt(
 		20))
 	var fullReply strings.Builder
 	for {
+		log.Printf("[agent] select waiting...")
+		log.Printf("[agent] textCh len: %d", len(textCh))
 		select {
 		case chunk, ok := <-textCh:
 			if !ok {
+				log.Printf("[agent] stream done, reply length: %d", len(fullReply.String()))
 				return &RunResult{RunID: runID, Reply: fullReply.String(),
 					Model: modelRef.Model}, nil
 			}
 			fullReply.WriteString(chunk)
 			sendEvent(eventCh, AgentEvent{Type: "chat.delta", RunID: runID,
 				Data: map[string]string{"chunk": chunk}})
-		case err := <-errCh:
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil // nil channel 永远不会被 select 选中
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}

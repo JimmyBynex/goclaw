@@ -49,7 +49,6 @@ func (h *Hub) Run() {
 				// 防止其中一个客户端的send满了导致阻塞后续的客户端
 				default:
 					log.Printf("[hub] client %s send buffer full, dropping", client.id)
-					close(client.send)
 					delete(h.clients, client)
 				}
 			}

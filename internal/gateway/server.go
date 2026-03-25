@@ -3,7 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"goclaw/internal/ai"
+	"goclaw/internal/agent"
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
 	"goclaw/internal/session"
@@ -52,7 +52,7 @@ func (g *Gateway) ServerWS(w http.ResponseWriter, r *http.Request) {
 	go client.writePump(conn)
 }
 
-func New(cfgMgr *config.Manager, aiClient ai.Client, store session.Store) *Gateway {
+func New(cfgMgr *config.Manager, store session.Store) *Gateway {
 	cfg := cfgMgr.Get()
 	hub := NewHub()
 	router := NewRouter()
@@ -60,7 +60,7 @@ func New(cfgMgr *config.Manager, aiClient ai.Client, store session.Store) *Gatew
 	health := NewHealthHandler()
 	router.Register("health", health.Health)
 
-	chat := NewChatHandler(aiClient, store, hub, cfgMgr, nil)
+	chat := NewChatHandler(store, hub, nil, nil)
 	router.Register("chat.send", chat.Send)
 	router.Register("chat.history", chat.History)
 	router.Register("chat.abort", chat.Abort)
@@ -78,10 +78,6 @@ func New(cfgMgr *config.Manager, aiClient ai.Client, store session.Store) *Gatew
 		Handler: mux,
 	}
 	return g
-}
-
-func (g *Gateway) SetChannelManager(chanMgr *channel.Manager) {
-	g.chat.chanMgr = chanMgr
 }
 
 func (g *Gateway) InboundHandler() channel.InBoundHandler {
@@ -104,4 +100,12 @@ func (g *Gateway) Start(ctx context.Context) error {
 func (g *Gateway) ServeHealthHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true,"clients":%d}`, g.hub.ClientCount())
+}
+
+func (g *Gateway) SetAgentRegistry(agentRgr *agent.Registry) {
+	g.chat.agentReg = agentRgr
+}
+
+func (g *Gateway) SetChannelManager(chanMgr *channel.Manager) {
+	g.chat.chanMgr = chanMgr
 }

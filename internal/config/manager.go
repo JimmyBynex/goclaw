@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
@@ -14,7 +15,8 @@ type Manager struct {
 	path     string                 //配置文件路径
 	ptr      atomic.Pointer[Config] //存当前配置的原子指针
 	watcher  *fsnotify.Watcher      //监听文件系统事件
-	handlers []OnChangeFunc         //配置变更后要通知谁
+	mu       sync.RWMutex
+	handlers []OnChangeFunc //配置变更后要通知谁
 }
 
 func NewManager(path string) (*Manager, error) {
@@ -44,7 +46,9 @@ func (m *Manager) Get() *Config {
 }
 
 func (m *Manager) OnChange(fn OnChangeFunc) {
+	m.mu.Lock()
 	m.handlers = append(m.handlers, fn)
+	m.mu.Unlock()
 }
 
 func (m *Manager) Watch(ctx context.Context) error {
@@ -73,7 +77,10 @@ func (m *Manager) reload() {
 		return
 	}
 	old := m.ptr.Swap(cfg)
-	for _, fn := range m.handlers {
+	m.mu.RLock()
+	handlers := m.handlers
+	m.mu.RUnlock()
+	for _, fn := range handlers {
 		go fn(old, cfg) // 异步通知，不阻塞监听循环
 	}
 }

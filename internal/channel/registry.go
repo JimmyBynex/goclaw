@@ -15,6 +15,7 @@ func Register(id string, f Factory) {
 	mu.Unlock()
 }
 
+// create才是创建实例的函数，start是主流程，register是添加到注册表
 // ch, err := channel.Create("telegram", "bot001", cfg, handler)使用示例
 func Create(id, accountID string, cfg map[string]any, handler InBoundHandler) (Channel, error) {
 	mu.RLock()

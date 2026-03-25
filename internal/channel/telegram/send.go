@@ -17,7 +17,10 @@ func (b *Bot) getUpdates(ctx context.Context, offset int, timeout int) ([]Update
 	params.Set("timeout", strconv.Itoa(timeout))
 	url := b.apiBase + "/getUpdates?" + params.Encode()
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := b.client.Do(req)
 
 	if err != nil {
@@ -33,7 +36,7 @@ func (b *Bot) getUpdates(ctx context.Context, offset int, timeout int) ([]Update
 }
 
 // 为什么需要返回*Message，因为需要拿到message_id方便后续修改
-func (b *Bot) sendMessage(peerID string, text string) (*Message, error) {
+func (b *Bot) sendMessage(ctx context.Context, peerID string, text string) (*Message, error) {
 
 	params := url.Values{
 		"chat_id":    {peerID},
@@ -41,7 +44,10 @@ func (b *Bot) sendMessage(peerID string, text string) (*Message, error) {
 		"parse_mode": {"Markdown"},
 	}
 	url := b.apiBase + "/sendMessage"
-	req, _ := http.NewRequestWithContext(context.Background(), "POST", url, strings.NewReader(params.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := b.client.Do(req)
@@ -64,7 +70,10 @@ func (b *Bot) editMessage(ctx context.Context, peerID string, messageID string, 
 		"parse_mode": {"Markdown"},
 	}
 	url := b.apiBase + "/editMessageText"
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(params.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(params.Encode()))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := b.client.Do(req)
 	if err != nil {

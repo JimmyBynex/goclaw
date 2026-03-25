@@ -36,7 +36,7 @@ func New(accountID string, cfg map[string]any, handler channel.InBoundHandler) (
 }
 
 func (b *Bot) Send(ctx context.Context, msg channel.OutboundMessage) (string, error) {
-	result, err := b.sendMessage(msg.PeerID, msg.Text)
+	result, err := b.sendMessage(ctx, msg.PeerID, msg.Text)
 	if err != nil {
 		log.Printf("[telegram] failed to send message: %v", err)
 		return "", err
@@ -65,7 +65,7 @@ func (b *Bot) Start(ctx context.Context) error {
 		}
 		for _, update := range updates {
 			offset = update.UpdateId + 1
-			if update.Message != nil {
+			if update.Message != nil && update.Message.From != nil {
 				//转换格式
 				msg := channel.InBoundMessage{
 					Raw:       update,
@@ -76,6 +76,7 @@ func (b *Bot) Start(ctx context.Context) error {
 					Text:      update.Message.Text,
 					UserID:    strconv.FormatInt(update.Message.From.ID, 10), //具体发送者
 				}
+				log.Printf("[telegram] received message: %s", msg.Text)
 				go b.handler(ctx, msg)
 			}
 		}
