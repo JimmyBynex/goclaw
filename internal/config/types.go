@@ -5,6 +5,7 @@ type Config struct {
 	Session  SessionConfig  `yaml:"session"`
 	AI       AIConfig       `yaml:"ai"`
 	Telegram TelegramConfig `yaml:"telegram"`
+	Agents   []AgentConfig  `yaml:"agents"`
 }
 
 type GatewayConfig struct {
@@ -32,4 +33,11 @@ type AIConfig struct {
 type TelegramConfig struct {
 	Token     string `yaml:"token"`
 	AccountId string `yaml:"account_id"`
+}
+
+type AgentConfig struct {
+	ID           string   `yaml:"id"`
+	SystemPrompt string   `yaml:"system_prompt"`
+	Model        string   `yaml:"model"`
+	Fallback     []string `yaml:"fallback"`
 }

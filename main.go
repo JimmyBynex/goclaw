@@ -9,6 +9,7 @@ import (
 	"goclaw/internal/session"
 	"log"
 
+	_ "goclaw/internal/ai/openrouter"
 	_ "goclaw/internal/channel/telegram" // 触发 init() 注册
 )
 

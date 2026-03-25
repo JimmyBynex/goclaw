@@ -146,3 +146,7 @@ func (c *Client) Stream(ctx context.Context, message []ai.Message, textch chan<-
 	return scanner.Err() //正常退出的路是上面遇到“[DONE]”
 
 }
+
+func init() {
+	ai.RegisterModelFactory("openrouter", func(apiKey, model string) ai.Client { return New(apiKey, model) })
+}

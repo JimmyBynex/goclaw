@@ -41,7 +41,7 @@ ChannelManager → 需要 InboundHandler 才能创建
 
 解法：先建 Gateway（不传 chanMgr），再建 ChannelManager，再把 chanMgr 注入回 Gateway：
 
-```go
+```golang
 gw := gateway.New(cfgMgr, aiClient, store)          // chanMgr 暂时为 nil
 chanMgr := channel.NewManager(gw.InboundHandler())  // 用 gw 的 handler
 gw.SetChannelManager(chanMgr)                        // 注入回去
