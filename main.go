@@ -46,14 +46,14 @@ func main() {
 
 	gw.SetAgentRegistry(agentRgr)
 
-	// 4. 启动 Telegram 渠道
+	// 5. 启动 Telegram 渠道
 	if err := chanMgr.Start(ctx, "telegram", cfg.Telegram.AccountId, map[string]any{
 		"token": cfg.Telegram.Token,
 	}); err != nil {
 		log.Fatalf("[main] start telegram: %v", err)
 	}
 
-	// 5. 配置变更时重启受影响的渠道
+	// 6. 配置变更时重启受影响的渠道
 	cfgMgr.OnChange(func(old, new *config.Config) {
 		switch config.Diff(old, new) {
 		case config.ReloadNone:
