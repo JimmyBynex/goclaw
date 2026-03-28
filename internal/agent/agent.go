@@ -53,6 +53,7 @@ func FromConfig(
 			Model:    fb,
 		})
 	}
+	//在这里注册工具了
 	registry := setupTools()
 	executor := tools.NewExecutor(registry, 30*time.Second)
 	return &Agent{

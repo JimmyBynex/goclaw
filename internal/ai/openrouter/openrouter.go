@@ -83,6 +83,7 @@ func New(apiKey string, model string) *Client {
 
 func (c *Client) Chat(ctx context.Context, messages []ai.Message, toolDefs []map[string]any) (*tools.Response, error) {
 	payload := chatRequest{Model: c.model, Stream: false}
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user", "system":
@@ -131,6 +132,7 @@ func (c *Client) Chat(ctx context.Context, messages []ai.Message, toolDefs []map
 		}
 	}
 
+	//最后每次添加工具
 	for _, def := range toolDefs {
 		payload.Tools = append(payload.Tools, toolParam{
 			Type: "function",
@@ -182,7 +184,9 @@ func (c *Client) Chat(ctx context.Context, messages []ai.Message, toolDefs []map
 	if len(result.Choices) == 0 {
 		return nil, fmt.Errorf("[ai]empty response")
 	}
+
 	choice := result.Choices[0]
+	//回显分类
 	switch choice.FinishReason {
 	case "stop":
 		var text string

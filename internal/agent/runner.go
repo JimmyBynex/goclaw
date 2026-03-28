@@ -101,7 +101,6 @@ func (a *Agent) runAttempt(
 			})
 
 			// 继续下一轮循环（AI 会看到工具结果，决定下一步）
-
 		default:
 			return nil, fmt.Errorf("unexpected stop reason: %s", resp.StopReason)
 		}

@@ -68,14 +68,14 @@ func main() {
 		}
 	})
 
-	// 6. 启动 Gateway（阻塞）
+	// 7. 启动 Gateway（阻塞）
 	go func() {
 		if err := gw.Start(ctx); err != nil {
 			log.Printf("[main] gateway error: %v", err)
 		}
 	}()
 
-	// 7. 等待退出
+	// 8. 等待退出
 	<-ctx.Done()
 	chanMgr.StopAll()
 }
