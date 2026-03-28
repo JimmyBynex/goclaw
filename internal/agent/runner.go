@@ -3,10 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"goclaw/internal/ai"
 	"goclaw/internal/session"
 	"log"
-	"strings"
 )
 
 // 最终结果
@@ -32,43 +32,82 @@ func (a *Agent) runAttempt(
 	modelRef ModelRef,
 	sess *session.Session,
 	runID string,
-	eventCh chan<- AgentEvent,
+	eventCh chan<- AgentEvent, //为什么还需要enventCh，因为还需要通知gateway
 ) (*RunResult, error) {
-	log.Printf("[agent] runAttempt: provider=%s model=%s", modelRef.Provider, modelRef.Model)
-	client, err := ai.NewClient(modelRef.Provider, modelRef.APIkey,
-		modelRef.Model)
+	client, err := ai.NewClient(modelRef.Provider, modelRef.APIKey, modelRef.Model)
 	if err != nil {
 		return nil, err
 	}
 
-	textCh, errCh := client.StreamChat(ctx, sess.MessagesForAI(a.systemPrompt,
-		20))
-	var fullReply strings.Builder
-	for {
-		log.Printf("[agent] select waiting...")
-		log.Printf("[agent] textCh len: %d", len(textCh))
-		select {
-		case chunk, ok := <-textCh:
-			if !ok {
-				log.Printf("[agent] stream done, reply length: %d", len(fullReply.String()))
-				return &RunResult{RunID: runID, Reply: fullReply.String(),
-					Model: modelRef.Model}, nil
+	// 为当前 Agent 过滤可用工具
+	agentTools := a.toolRegistry.FilterForAgent(a.id)
+	toolDefs := agentTools.Definitions()
+
+	// 工具调用循环
+	// 消息历史在循环内增长（加入工具结果），不写入持久化 Session
+	// 只有最终的文本回复才写入 Session
+	loopMessages := sess.MessagesForAI(a.systemPrompt, 20)
+	maxIterations := 10 // 防止无限循环
+
+	for i := 0; i < maxIterations; i++ {
+		// 发起 AI 请求
+		resp, err := client.Chat(ctx, loopMessages, toolDefs)
+		if err != nil {
+			return nil, err
+		}
+
+		switch resp.StopReason {
+		case "end_turn":
+			// AI 完成，返回文字结果
+			return &RunResult{
+				RunID: runID,
+				Reply: resp.Text,
+				Model: modelRef.Model,
+			}, nil
+
+		case "tool_use":
+			// AI 要调用工具
+			if len(resp.ToolCalls) == 0 {
+				return nil, fmt.Errorf("tool_use stop reason but no tool calls")
 			}
-			fullReply.WriteString(chunk)
-			sendEvent(eventCh, AgentEvent{Type: "chat.delta", RunID: runID,
-				Data: map[string]string{"chunk": chunk}})
-		case err, ok := <-errCh:
-			if !ok {
-				errCh = nil // nil channel 永远不会被 select 选中
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
+
+			// 通知 Gateway AI 正在调用工具
+			sendEvent(eventCh, AgentEvent{
+				Type:  "agent.tool_calls",
+				RunID: runID,
+				Data:  resp.ToolCalls,
+			})
+
+			// 将 AI 的工具调用请求加入消息历史
+			loopMessages = append(loopMessages, ai.Message{
+				Role:      "assistant",
+				ToolCalls: resp.ToolCalls,
+			})
+
+			// 并发执行所有工具
+			results := a.executor.ExecuteAll(ctx, resp.ToolCalls)
+
+			// 通知 Gateway 工具执行结果
+			sendEvent(eventCh, AgentEvent{
+				Type:  "agent.tool_results",
+				RunID: runID,
+				Data:  results,
+			})
+
+			// 将工具结果加入消息历史，供 AI 继续推理
+			loopMessages = append(loopMessages, ai.Message{
+				Role:        "tool",
+				ToolResults: results,
+			})
+
+			// 继续下一轮循环（AI 会看到工具结果，决定下一步）
+
+		default:
+			return nil, fmt.Errorf("unexpected stop reason: %s", resp.StopReason)
 		}
 	}
+
+	return nil, fmt.Errorf("tool loop exceeded max iterations (%d)", maxIterations)
 }
 
 // 防止下游消费受限，影响推理

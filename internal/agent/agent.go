@@ -4,6 +4,9 @@ import (
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
 	"goclaw/internal/session"
+	"goclaw/internal/tools"
+	"goclaw/internal/tools/builtin"
+	"time"
 )
 
 // AI代理的核心
@@ -14,11 +17,13 @@ type Agent struct {
 	models       []ModelRef
 	store        session.Store
 	abortReg     *AbortRegistry
+	toolRegistry *tools.Registry
+	executor     *tools.Executor
 	channelMgr   *channel.Manager //推理期间发 typing indicator
 }
 type ModelRef struct {
 	Provider string
-	APIkey   string
+	APIKey   string
 	Model    string
 }
 
@@ -38,16 +43,18 @@ func FromConfig(
 	}
 	models := []ModelRef{{
 		Provider: globalAI.Provider,
-		APIkey:   globalAI.ApiKey,
+		APIKey:   globalAI.ApiKey,
 		Model:    model,
 	}}
 	for _, fb := range agentCfg.Fallback {
 		models = append(models, ModelRef{
 			Provider: globalAI.Provider,
-			APIkey:   globalAI.ApiKey,
+			APIKey:   globalAI.ApiKey,
 			Model:    fb,
 		})
 	}
+	registry := setupTools()
+	executor := tools.NewExecutor(registry, 30*time.Second)
 	return &Agent{
 		id:           agentCfg.ID,
 		systemPrompt: systemPrompt,
@@ -55,5 +62,17 @@ func FromConfig(
 		store:        store,
 		abortReg:     abortReg,
 		channelMgr:   chanMgr,
+		toolRegistry: registry,
+		executor:     executor,
 	}
+}
+
+func setupTools() *tools.Registry {
+	reg := tools.NewRegistry()
+
+	reg.Register(builtin.GetCurrentTimeTool)
+	reg.Register(builtin.CalculateTool)
+	reg.Register(builtin.HTTPFetchTool)
+
+	return reg
 }
