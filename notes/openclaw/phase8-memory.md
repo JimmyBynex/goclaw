@@ -117,6 +117,19 @@ type Store interface {
 
 ## 第二步：SQLite + FTS5 实现
 
+> **设计说明：中文分词**
+>
+> FTS5 默认分词器基于空格切词，对中文无效（"我在学Go并发编程"整句被当作一个词）。
+> 使用 `github.com/go-ego/gse`（纯 Go，无需 CGO）在存入和查询时做分词。
+>
+> 关键点：FTS5 **不使用** `content=memories`（不让 FTS5 直接读主表原文），
+> 而是在 Go 里分词后手动写入分词结果。触发器也因此去掉，改为 Go 手动双写。
+>
+> ```
+> 主表 memories     存原始内容（"我在学Go并发编程"）← 用于展示
+> 虚拟表 memories_fts 存分词结果（"我 在 学 Go 并发 编程"）← 用于搜索
+> ```
+
 ```go
 // internal/memory/sqlite.go
 
@@ -129,12 +142,14 @@ import (
     "strings"
     "time"
 
+    "github.com/go-ego/gse"
     _ "modernc.org/sqlite" // 纯 Go SQLite，无需 CGO
 )
 
 // SQLiteStore 使用 SQLite + FTS5 实现记忆存储
 type SQLiteStore struct {
-    db *sql.DB
+    db  *sql.DB
+    seg gse.Segmenter // 中文分词器
 }
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
@@ -145,7 +160,10 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
         return nil, err
     }
 
-    s := &SQLiteStore{db: db}
+    var seg gse.Segmenter
+    seg.LoadDict() // 加载内置词典
+
+    s := &SQLiteStore{db: db, seg: seg}
     if err := s.migrate(); err != nil {
         db.Close()
         return nil, err
@@ -153,10 +171,17 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
     return s, nil
 }
 
+// tokenize 对文本分词，返回空格分隔的词序列
+// "我在学Go并发编程" → "我 在 学 Go 并发 编程"
+func (s *SQLiteStore) tokenize(text string) string {
+    segments := s.seg.Slice(text, true)
+    return strings.Join(segments, " ")
+}
+
 // migrate 创建数据库表结构
 func (s *SQLiteStore) migrate() error {
     _, err := s.db.Exec(`
-        -- 主表：存储记忆元数据
+        -- 主表：存储记忆元数据（原始内容）
         CREATE TABLE IF NOT EXISTS memories (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_id   TEXT NOT NULL,
@@ -171,40 +196,23 @@ func (s *SQLiteStore) migrate() error {
         -- 索引：按 agent_id 查询
         CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
 
-        -- FTS5 虚拟表：全文检索（BM25 排序）
-        -- content=memories 表示 FTS 表的内容来自 memories 表
-        -- content_rowid=id 表示 rowid 对应 memories.id
+        -- FTS5 虚拟表：存分词后内容，用于全文检索（BM25 排序）
+        -- 不使用 content=memories，由 Go 手动写入分词结果
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
             content,
-            tags,
-            content=memories,
-            content_rowid=id
+            tags
         );
-
-        -- 触发器：保持 FTS 表与主表同步
-        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts(rowid, content, tags)
-            VALUES (new.id, new.content, new.tags);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-            UPDATE memories_fts
-            SET content = new.content, tags = new.tags
-            WHERE rowid = new.id;
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-            DELETE FROM memories_fts WHERE rowid = old.id;
-        END;
     `)
     return err
 }
 
 // Save 保存一条记忆
+// 主表存原始内容，FTS5 存分词后内容（两者分开，支持中文检索）
 func (s *SQLiteStore) Save(e *Entry) error {
     tags, _ := json.Marshal(e.Tags)
     now := time.Now()
 
+    // 1. 写主表（原始内容）
     result, err := s.db.Exec(`
         INSERT INTO memories (agent_id, session_id, content, tags, source, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -217,7 +225,15 @@ func (s *SQLiteStore) Save(e *Entry) error {
     e.ID = id
     e.CreatedAt = now
     e.UpdatedAt = now
-    return nil
+
+    // 2. 写 FTS5（分词后内容）
+    tokenizedContent := s.tokenize(e.Content)
+    tokenizedTags := s.tokenize(strings.Join(e.Tags, " "))
+    _, err = s.db.Exec(
+        "INSERT INTO memories_fts(rowid, content, tags) VALUES (?, ?, ?)",
+        id, tokenizedContent, tokenizedTags,
+    )
+    return err
 }
 
 // Search 使用 FTS5 BM25 检索记忆，再叠加时间衰减
@@ -227,9 +243,12 @@ func (s *SQLiteStore) Search(q SearchQuery) ([]*Entry, error) {
         limit = 5
     }
 
+    // 查询词也要分词，与 FTS5 存储的分词结果对齐
+    tokenizedQuery := s.tokenize(q.Query)
+
     // FTS5 的 BM25 函数：分数越小越相关（负数），需要取反
     // bm25(memories_fts, 10, 1) 表示 content 字段权重 10，tags 权重 1
-    query := `
+    sqlQuery := `
         SELECT
             m.id, m.agent_id, m.session_id, m.content, m.tags, m.source,
             m.created_at, m.updated_at,
@@ -239,17 +258,17 @@ func (s *SQLiteStore) Search(q SearchQuery) ([]*Entry, error) {
         WHERE memories_fts MATCH ?
           AND m.agent_id = ?
     `
-    args := []any{fts5Query(q.Query), q.AgentID}
+    args := []any{fts5Query(tokenizedQuery), q.AgentID}
 
     if q.MaxAgeDays > 0 {
-        query += " AND m.created_at >= datetime('now', ?)"
+        sqlQuery += " AND m.created_at >= datetime('now', ?)"
         args = append(args, fmt.Sprintf("-%d days", q.MaxAgeDays))
     }
 
-    query += " ORDER BY bm25_score DESC LIMIT ?"
+    sqlQuery += " ORDER BY bm25_score DESC LIMIT ?"
     args = append(args, limit*3) // 多取一些，留给时间衰减重排序
 
-    rows, err := s.db.Query(query, args...)
+    rows, err := s.db.Query(sqlQuery, args...)
     if err != nil {
         return nil, err
     }
@@ -280,18 +299,19 @@ func (s *SQLiteStore) Search(q SearchQuery) ([]*Entry, error) {
     return entries, nil
 }
 
-// fts5Query 将普通查询文本转为 FTS5 查询语法
-// FTS5 支持短语查询 "hello world"、前缀匹配 hello* 等
-func fts5Query(q string) string {
-    words := strings.Fields(q)
-    // 对每个词加前缀匹配（*），允许部分匹配
+// fts5Query 将分词后的查询文本转为 FTS5 查询语法
+// 对每个词加前缀匹配（*），允许部分匹配
+func fts5Query(tokenized string) string {
+    words := strings.Fields(tokenized)
     for i, w := range words {
         words[i] = w + "*"
     }
     return strings.Join(words, " ")
 }
 
+// Delete 删除一条记忆，同步删除 FTS5 索引
 func (s *SQLiteStore) Delete(id int64) error {
+    s.db.Exec("DELETE FROM memories_fts WHERE rowid = ?", id)
     _, err := s.db.Exec("DELETE FROM memories WHERE id = ?", id)
     return err
 }
