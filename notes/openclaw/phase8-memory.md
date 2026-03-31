@@ -415,7 +415,7 @@ func applyTimeDecay(entries []*Entry) []*Entry {
 // MMR（最大边际相关性）去重
 // 避免返回内容高度相似的多条记忆
 // 在记忆数量很多时使用，Phase 8 可选
-func mmrRerank(entries []*Entry, lambda float64, k int) []*Entry {
+func mmrRerank(seg *gse.Segmenter, entries []*Entry, lambda float64, k int) []*Entry {
     if len(entries) <= k {
         return entries
     }
@@ -433,7 +433,7 @@ func mmrRerank(entries []*Entry, lambda float64, k int) []*Entry {
             // 与已选记忆的最大相似度（简单版：基于文字重叠率）
             maxSim := 0.0
             for _, sel := range selected {
-                sim := jaccardSimilarity(candidate.Content, sel.Content)
+                sim := jaccardSimilarity(seg, candidate.Content, sel.Content)
                 if sim > maxSim {
                     maxSim = sim
                 }
@@ -454,9 +454,9 @@ func mmrRerank(entries []*Entry, lambda float64, k int) []*Entry {
 }
 
 // jaccardSimilarity 计算两段文本的 Jaccard 相似度（词集合交集/并集）
-func jaccardSimilarity(a, b string) float64 {
-    setA := tokenize(a)
-    setB := tokenize(b)
+func jaccardSimilarity(seg *gse.Segmenter, a, b string) float64 {
+    setA := tokenize(seg, a)
+    setB := tokenize(seg, b)
 
     intersection := 0
     for w := range setA {
@@ -471,11 +471,18 @@ func jaccardSimilarity(a, b string) float64 {
     return float64(intersection) / float64(union)
 }
 
-func tokenize(text string) map[string]bool {
-    words := strings.Fields(strings.ToLower(text))
+// tokenize 用于 Jaccard 相似度计算，接入 gse 支持中文分词
+// 注意：这是 search.go 里的包级函数，和 SQLiteStore.tokenize 方法不同
+// SQLiteStore.tokenize 返回空格拼接的字符串（给 FTS5 用）
+// 这里返回词集合（给 Jaccard 用）
+func tokenize(seg *gse.Segmenter, text string) map[string]bool {
+    words := seg.Slice(strings.ToLower(text), true)
     set := make(map[string]bool, len(words))
     for _, w := range words {
-        set[w] = true
+        w = strings.TrimSpace(w)
+        if w != "" {
+            set[w] = true
+        }
     }
     return set
 }

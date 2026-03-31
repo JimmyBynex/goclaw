@@ -6,6 +6,7 @@ import (
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
 	"goclaw/internal/gateway"
+	"goclaw/internal/memory"
 	"goclaw/internal/session"
 	"log"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	_ "goclaw/internal/ai/openrouter"
 	_ "goclaw/internal/channel/telegram" // 触发 init() 注册
+	_ "modernc.org/sqlite"
 )
 
 func main() {
@@ -32,6 +34,13 @@ func main() {
 		log.Fatalf("[main] session.NewFileStore err: %v", err)
 	}
 
+	os.MkdirAll(cfg.Memory.Dir, 0755)
+	memStore, err := memory.NewSQLiteStore(cfg.Memory.Dir + "/memory.db")
+	if err != nil {
+		log.Fatalf("[main] memory.NewSQLiteStore err: %v", err)
+	}
+	memoryMgr := memory.NewManager(memStore)
+
 	// 1. 先建 Gateway
 	gw := gateway.New(cfgMgr, store)
 
@@ -42,7 +51,7 @@ func main() {
 	gw.SetChannelManager(chanMgr)
 
 	// 4. 构建agentRgr
-	agentRgr := agent.NewRegistry(cfgMgr, store, chanMgr)
+	agentRgr := agent.NewRegistry(cfgMgr, store, chanMgr, memoryMgr)
 
 	gw.SetAgentRegistry(agentRgr)
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
+	"goclaw/internal/memory"
 	"goclaw/internal/session"
 	"log"
 	"sync"
@@ -18,27 +19,28 @@ type Registry struct {
 }
 
 // 这个函数只是注册本身以及注册热加载
-func NewRegistry(cfgMgr *config.Manager, store session.Store, chanMgr *channel.Manager) *Registry {
+func NewRegistry(cfgMgr *config.Manager, store session.Store, chanMgr *channel.Manager, memoryMgr *memory.Manager) *Registry {
 	r := &Registry{
 		agents:   make(map[string]*Agent),
 		abortReg: NewAbortRegistry(),
 	}
-	r.reloadAgents(cfgMgr.Get(), store, chanMgr)
+	r.reloadAgents(cfgMgr.Get(), store, chanMgr, memoryMgr)
 	cfgMgr.OnChange(func(old, new *config.Config) {
-		r.reloadAgents(cfgMgr.Get(), store, chanMgr)
+		r.reloadAgents(cfgMgr.Get(), store, chanMgr, memoryMgr)
 	})
 	return r
 
 }
 
 // 实际导入
-func (r *Registry) reloadAgents(cfg *config.Config, store session.Store, chanMgr *channel.Manager) {
+func (r *Registry) reloadAgents(cfg *config.Config, store session.Store, chanMgr *channel.Manager, memoryMgr *memory.Manager) {
 	newAgents := make(map[string]*Agent)
 	for _, agent := range cfg.Agents {
-		newAgents[agent.ID] = FromConfig(agent, cfg.AI, store, r.abortReg, chanMgr)
+		newAgents[agent.ID] = FromConfig(agent, cfg.AI, store, r.abortReg, chanMgr, memoryMgr)
 	}
 	if len(newAgents) == 0 {
-		newAgents["default"] = FromConfig(config.AgentConfig{ID: "default"}, cfg.AI, store, r.abortReg, chanMgr)
+
+		newAgents["default"] = FromConfig(config.AgentConfig{ID: "default"}, cfg.AI, store, r.abortReg, chanMgr, memoryMgr)
 	}
 	r.mu.Lock()
 	r.agents = newAgents

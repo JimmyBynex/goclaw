@@ -3,6 +3,7 @@ package agent
 import (
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
+	"goclaw/internal/memory"
 	"goclaw/internal/session"
 	"goclaw/internal/tools"
 	"goclaw/internal/tools/builtin"
@@ -15,11 +16,12 @@ type Agent struct {
 	id           string
 	systemPrompt string
 	models       []ModelRef
-	store        session.Store
+	store        session.Store //接口，已经是引用
 	abortReg     *AbortRegistry
 	toolRegistry *tools.Registry
 	executor     *tools.Executor
 	channelMgr   *channel.Manager //推理期间发 typing indicator
+	memoryMgr    *memory.Manager
 }
 type ModelRef struct {
 	Provider string
@@ -32,7 +34,9 @@ func FromConfig(
 	globalAI config.AIConfig,
 	store session.Store,
 	abortReg *AbortRegistry,
-	chanMgr *channel.Manager) *Agent {
+	chanMgr *channel.Manager,
+	memoryMgr *memory.Manager,
+) *Agent {
 	model := agentCfg.Model
 	if model == "" {
 		model = globalAI.Model
@@ -65,6 +69,7 @@ func FromConfig(
 		channelMgr:   chanMgr,
 		toolRegistry: registry,
 		executor:     executor,
+		memoryMgr:    memoryMgr,
 	}
 }
 

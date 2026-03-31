@@ -97,7 +97,7 @@ func (s *SQLiteStore) Save(e *Entry) error {
 	tokenizedTags := s.tokenize(strings.Join(e.Tags, " "))
 	_, err = s.db.Exec(`
         INSERT INTO memories_fts(rowid,content, tags)
-        VALUES (?, ?, ?, ?)`, id, tokenizedContent, tokenizedTags)
+        VALUES (?, ?, ?)`, id, tokenizedContent, tokenizedTags)
 	return err
 }
 
@@ -128,7 +128,7 @@ func (s *SQLiteStore) Search(q SearchQuery) ([]*Entry, error) {
 	//等于0是没有限制
 	if q.MaxAgeDays > 0 {
 		sqlQuery += " AND m.created_at > datetime('now',?)"
-		args = append(args, fmt.Sprintf("-%d", q.MaxAgeDays))
+		args = append(args, fmt.Sprintf("-%d days", q.MaxAgeDays))
 	}
 
 	sqlQuery += " ORDER BY bm25_score DESC LIMIT ?"
@@ -147,7 +147,7 @@ func (s *SQLiteStore) Search(q SearchQuery) ([]*Entry, error) {
 		var tagsJson string
 		var bm25Score float64
 		//方便格式转化
-		err = rows.Scan(&e.ID, &e.AgentID, &e.SessionID, &e.Content, &tagsJson, &e.CreatedAt, &e.UpdatedAt, &bm25Score)
+		err = rows.Scan(&e.ID, &e.AgentID, &e.SessionID, &e.Content, &tagsJson, &e.Source, &e.CreatedAt, &e.UpdatedAt, &bm25Score)
 		if err != nil {
 			continue
 		}
@@ -174,7 +174,7 @@ func fts5Query(tokenized string) string {
 	for i, word := range words {
 		words[i] = word + "*"
 	}
-	return strings.Join(words, " ")
+	return strings.Join(words, " OR ")
 }
 
 func (s *SQLiteStore) Delete(id int64) error {

@@ -6,6 +6,7 @@ type Config struct {
 	AI       AIConfig       `yaml:"ai"`
 	Telegram TelegramConfig `yaml:"telegram"`
 	Agents   []AgentConfig  `yaml:"agents"`
+	Memory   MemoryConfig   `yaml:"memory"`
 }
 
 type GatewayConfig struct {
@@ -40,4 +41,8 @@ type AgentConfig struct {
 	SystemPrompt string   `yaml:"system_prompt"`
 	Model        string   `yaml:"model"`
 	Fallback     []string `yaml:"fallback"`
+}
+
+type MemoryConfig struct {
+	Dir string `yaml:"dir"`
 }

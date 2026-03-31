@@ -30,7 +30,7 @@ var ErrAborted = errors.New("inference aborted")
 func (a *Agent) runAttempt(
 	ctx context.Context,
 	modelRef ModelRef,
-	sess *session.Session,
+	messages []ai.Message,
 	runID string,
 	eventCh chan<- AgentEvent, //为什么还需要enventCh，因为还需要通知gateway
 ) (*RunResult, error) {
@@ -46,12 +46,11 @@ func (a *Agent) runAttempt(
 	// 工具调用循环
 	// 消息历史在循环内增长（加入工具结果），不写入持久化 Session
 	// 只有最终的文本回复才写入 Session
-	loopMessages := sess.MessagesForAI(a.systemPrompt, 20)
 	maxIterations := 10 // 防止无限循环
 
 	for i := 0; i < maxIterations; i++ {
 		// 发起 AI 请求
-		resp, err := client.Chat(ctx, loopMessages, toolDefs)
+		resp, err := client.Chat(ctx, messages, toolDefs)
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +78,7 @@ func (a *Agent) runAttempt(
 			})
 
 			// 将 AI 的工具调用请求加入消息历史
-			loopMessages = append(loopMessages, ai.Message{
+			messages = append(messages, ai.Message{
 				Role:      "assistant",
 				ToolCalls: resp.ToolCalls,
 			})
@@ -95,7 +94,7 @@ func (a *Agent) runAttempt(
 			})
 
 			// 将工具结果加入消息历史，供 AI 继续推理
-			loopMessages = append(loopMessages, ai.Message{
+			messages = append(messages, ai.Message{
 				Role:        "tool",
 				ToolResults: results,
 			})
@@ -123,7 +122,7 @@ func sendEvent(ch chan<- AgentEvent, e AgentEvent) {
 // 阻塞使用每个可使用的模型，直到主动停止或者全部失败
 func (a *Agent) runWithFallback(
 	ctx context.Context,
-	sess *session.Session,
+	messages []ai.Message,
 	runID string,
 	eventCh chan<- AgentEvent,
 ) (*RunResult, error) {
@@ -134,7 +133,7 @@ func (a *Agent) runWithFallback(
 			return nil, ErrAborted
 		default:
 		}
-		result, err := a.runAttempt(ctx, model, sess, runID, eventCh)
+		result, err := a.runAttempt(ctx, model, messages, runID, eventCh)
 		if err != nil {
 			log.Printf("[agent]runWithFallback: model=%s runID=%s err=%v",
 				model.Model, runID, err)
@@ -159,11 +158,25 @@ func (a *Agent) RunReply(
 		a.abortReg.Unregister(runID)
 	}()
 	sess.AddUserMessage(userText)
-	result, err := a.runWithFallback(ctx, sess, runID, eventCh)
+
+	//提取记忆加到[]ai.Message
+	messagesWithMemory := a.memoryMgr.InjectMemories(ctx, a.id, userText, sess.MessagesForAI(a.systemPrompt, 20))
+
+	result, err := a.runWithFallback(ctx, messagesWithMemory, runID, eventCh)
 	if err != nil {
 		return nil, err
 	}
 	sess.AddAssistantMessage(result.Reply)
 	a.store.Save(sess)
+
+	//异步提取记忆
+	go a.memoryMgr.ExtractAndSave(
+		context.Background(),
+		a.id,
+		sess.Key.String(),
+		userText,
+		result.Reply,
+	)
+	
 	return result, nil
 }
