@@ -54,6 +54,16 @@ func (r *Registry) FilterForAgent(agentID string) *Registry {
 	return filterRegistry
 }
 
+func (r *Registry) Clone() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	clone := NewRegistry()
+	for name, tool := range r.tools {
+		clone.tools[name] = tool
+	}
+	return clone
+}
+
 func isAllowed(t *Tool, agentID string) bool {
 	//全部允许
 	if len(t.Policy.AllowedAgents) == 0 {

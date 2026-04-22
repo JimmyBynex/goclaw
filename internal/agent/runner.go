@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"goclaw/internal/ai"
 	"goclaw/internal/session"
+	"goclaw/internal/tools"
+	"goclaw/internal/tools/builtin"
 	"log"
 )
 
@@ -33,6 +35,7 @@ func (a *Agent) runAttempt(
 	messages []ai.Message,
 	runID string,
 	eventCh chan<- AgentEvent, //为什么还需要enventCh，因为还需要通知gateway
+	registry *tools.Registry,
 ) (*RunResult, error) {
 	client, err := ai.NewClient(modelRef.Provider, modelRef.APIKey, modelRef.Model)
 	if err != nil {
@@ -40,7 +43,7 @@ func (a *Agent) runAttempt(
 	}
 
 	// 为当前 Agent 过滤可用工具
-	agentTools := a.toolRegistry.FilterForAgent(a.id)
+	agentTools := registry.FilterForAgent(a.id)
 	toolDefs := agentTools.Definitions()
 
 	// 工具调用循环
@@ -125,6 +128,7 @@ func (a *Agent) runWithFallback(
 	messages []ai.Message,
 	runID string,
 	eventCh chan<- AgentEvent,
+	registry *tools.Registry,
 ) (*RunResult, error) {
 	var lastErr error
 	for _, model := range a.models {
@@ -133,7 +137,7 @@ func (a *Agent) runWithFallback(
 			return nil, ErrAborted
 		default:
 		}
-		result, err := a.runAttempt(ctx, model, messages, runID, eventCh)
+		result, err := a.runAttempt(ctx, model, messages, runID, eventCh, registry)
 		if err != nil {
 			log.Printf("[agent]runWithFallback: model=%s runID=%s err=%v",
 				model.Model, runID, err)
@@ -151,6 +155,7 @@ func (a *Agent) RunReply(
 	userText string,
 	runID string,
 	eventCh chan<- AgentEvent,
+	channelID, accountID, peerID string,
 ) (*RunResult, error) {
 	ctx, cancel := a.abortReg.Register(parentCtx, runID)
 	defer func() {
@@ -159,10 +164,15 @@ func (a *Agent) RunReply(
 	}()
 	sess.AddUserMessage(userText)
 
+	sessionRegistry := a.toolRegistry.Clone()
+	builtin.RegisterReminderTools(sessionRegistry, a.cronStore, a.id, channelID, accountID, peerID)
+	builtin.RegisterCalendarTools(sessionRegistry, a.eventStore, a.id)
+	builtin.RegisterLedgerTools(sessionRegistry, a.ledgerStore, a.id)
+
 	//提取记忆加到[]ai.Message
 	messagesWithMemory := a.memoryMgr.InjectMemories(ctx, a.id, userText, sess.MessagesForAI(a.systemPrompt, 20))
 
-	result, err := a.runWithFallback(ctx, messagesWithMemory, runID, eventCh)
+	result, err := a.runWithFallback(ctx, messagesWithMemory, runID, eventCh, sessionRegistry)
 	if err != nil {
 		return nil, err
 	}

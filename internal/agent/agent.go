@@ -3,8 +3,10 @@ package agent
 import (
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
+	"goclaw/internal/cron"
 	"goclaw/internal/memory"
 	"goclaw/internal/session"
+	"goclaw/internal/structured"
 	"goclaw/internal/tools"
 	"goclaw/internal/tools/builtin"
 	"time"
@@ -22,6 +24,9 @@ type Agent struct {
 	executor     *tools.Executor
 	channelMgr   *channel.Manager //推理期间发 typing indicator
 	memoryMgr    *memory.Manager
+	cronStore    *cron.Store
+	eventStore   *structured.EventStore
+	ledgerStore  *structured.LedgerStore
 }
 type ModelRef struct {
 	Provider string
@@ -36,6 +41,9 @@ func FromConfig(
 	abortReg *AbortRegistry,
 	chanMgr *channel.Manager,
 	memoryMgr *memory.Manager,
+	cronStore *cron.Store,
+	eventStore *structured.EventStore,
+	ledgerStore *structured.LedgerStore,
 ) *Agent {
 	model := agentCfg.Model
 	if model == "" {
@@ -70,6 +78,9 @@ func FromConfig(
 		toolRegistry: registry,
 		executor:     executor,
 		memoryMgr:    memoryMgr,
+		cronStore:    cronStore,
+		eventStore:   eventStore,
+		ledgerStore:  ledgerStore,
 	}
 }
 

@@ -328,6 +328,7 @@ type Event struct {
     ID        int64
     AgentID   string
     Title     string
+    Type      string    // "recurring" | "task" | "one_time"
     StartAt   time.Time
     EndAt     time.Time
     Location  string
@@ -348,6 +349,7 @@ func (s *EventStore) migrate() error {
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_id   TEXT NOT NULL,
             title      TEXT NOT NULL,
+            type       TEXT NOT NULL DEFAULT 'one_time',
             start_at   DATETIME NOT NULL,
             end_at     DATETIME,
             location   TEXT,
@@ -361,9 +363,9 @@ func (s *EventStore) migrate() error {
 
 func (s *EventStore) Save(e *Event) error {
     result, err := s.db.Exec(`
-        INSERT INTO events (agent_id, title, start_at, end_at, location, note, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, e.AgentID, e.Title, e.StartAt, e.EndAt, e.Location, e.Note, time.Now())
+        INSERT INTO events (agent_id, title, type, start_at, end_at, location, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, e.AgentID, e.Title, e.Type, e.StartAt, e.EndAt, e.Location, e.Note, time.Now())
     if err != nil {
         return err
     }
@@ -508,17 +510,18 @@ import (
     "goclaw/internal/tools"
 )
 
-// RegisterReminderTools 注册提醒相关工具
+// RegisterReminderTools 注册提醒相关工具（在 RunReply 时动态注册，绑定当前会话渠道信息）
+// 工具保持原子性：AI 自己决定何时提醒、需要几个提醒，不使用固定规则
 func RegisterReminderTools(registry *tools.Registry, store *cron.Store, agentID, channelID, accountID, peerID string) {
     registry.Register(tools.Tool{
         Name:        "create_reminder",
-        Description: "创建一个定时提醒。时间格式：RFC3339（如 2026-03-29T09:00:00+08:00）或 cron 表达式（如 0 8 * * * 表示每天8点）",
+        Description: "创建一个定时提醒。时间格式：RFC3339（如 2026-04-01T09:00:00+08:00）或常见格式（如 2026-04-01 09:00）。重复任务使用 cron 表达式（如 0 8 * * * 表示每天8点）并设 repeat=true",
         InputSchema: map[string]any{
             "type": "object",
             "properties": map[string]any{
                 "message":  map[string]any{"type": "string", "description": "提醒内容"},
-                "schedule": map[string]any{"type": "string", "description": "触发时间或 cron 表达式"},
-                "repeat":   map[string]any{"type": "boolean", "description": "是否重复，true=按 cron 重复，false=只触发一次"},
+                "schedule": map[string]any{"type": "string", "description": "触发时间（RFC3339/自然格式）或 cron 表达式（repeat=true 时）"},
+                "repeat":   map[string]any{"type": "boolean", "description": "是否重复，true=按 cron 重复，false=只触发一次（默认）"},
             },
             "required": []string{"message", "schedule"},
         },
@@ -532,7 +535,7 @@ func RegisterReminderTools(registry *tools.Registry, store *cron.Store, agentID,
                 return "", err
             }
 
-            nextRun, err := parseSchedule(p.Schedule)
+            nextRun, err := parseSchedule(p.Schedule, p.Repeat)
             if err != nil {
                 return "", fmt.Errorf("无法解析时间: %w", err)
             }
@@ -596,9 +599,20 @@ func RegisterReminderTools(registry *tools.Registry, store *cron.Store, agentID,
     })
 }
 
-// parseSchedule 解析时间字符串（RFC3339 或简单自然语言）
-func parseSchedule(s string) (time.Time, error) {
-    // 尝试 RFC3339
+// parseSchedule 解析时间字符串
+// repeat=false：解析为具体时间点（RFC3339 或常见格式）
+// repeat=true：解析 cron 表达式，计算下次触发时间
+func parseSchedule(s string, repeat bool) (time.Time, error) {
+    if repeat {
+        // cron 表达式：用 robfig/cron 解析，返回下次触发时间
+        parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+        sched, err := parser.Parse(s)
+        if err != nil {
+            return time.Time{}, fmt.Errorf("invalid cron expression: %w", err)
+        }
+        return sched.Next(time.Now()), nil
+    }
+    // 一次性：尝试 RFC3339
     if t, err := time.Parse(time.RFC3339, s); err == nil {
         return t, nil
     }
@@ -606,14 +620,9 @@ func parseSchedule(s string) (time.Time, error) {
     formats := []string{
         "2006-01-02 15:04",
         "2006-01-02T15:04",
-        "01-02 15:04",
     }
     for _, f := range formats {
         if t, err := time.ParseInLocation(f, s, time.Local); err == nil {
-            // 如果没有年份，补上当前年
-            if t.Year() == 0 {
-                t = t.AddDate(time.Now().Year(), 0, 0)
-            }
             return t, nil
         }
     }
@@ -625,58 +634,201 @@ func parseSchedule(s string) (time.Time, error) {
 
 ## 第七步：集成到 Agent
 
-Agent 初始化时注册工具，需要把当前对话的渠道信息传进去：
+提醒工具需要知道往哪个渠道发消息（channelID/accountID/peerID），这些信息只有在收到消息时才有，Agent 初始化时不知道。解法是**动态工具注册**：RunReply 时克隆一份 Registry，注入渠道信息后再推理。
+
+涉及以下文件改动：
+
+### 7.1 tools/registry.go — 新增 Clone()
 
 ```go
-// internal/agent/agent.go（修改 setupTools，新增结构化工具）
+// Clone 复制所有工具到新 Registry，用于 per-request 隔离
+func (r *Registry) Clone() *Registry {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    clone := NewRegistry()
+    for name, tool := range r.tools {
+        clone.tools[name] = tool
+    }
+    return clone
+}
+```
 
-// 问题：工具创建提醒时需要知道往哪个渠道发消息
-// 解法：提醒工具在 RunReply 调用时动态注册（而不是 Agent 初始化时）
-// 因为 channelID/peerID 来自入站消息，初始化时不知道
+### 7.2 agent/agent.go — Agent 结构体新增三个 Store
 
-// RunReply 修改：传入消息的渠道信息，动态注册提醒工具
+```go
+type Agent struct {
+    id           string
+    systemPrompt string
+    models       []ModelRef
+    store        session.Store
+    abortReg     *AbortRegistry
+    toolRegistry *tools.Registry
+    executor     *tools.Executor
+    channelMgr   *channel.Manager
+    memoryMgr    *memory.Manager
+    // 新增：
+    cronStore    *cron.Store
+    eventStore   *structured.EventStore
+    ledgerStore  *structured.LedgerStore
+}
+
+// FromConfig 新增三个参数
+func FromConfig(
+    agentCfg config.AgentConfig,
+    globalAI config.AIConfig,
+    store session.Store,
+    abortReg *AbortRegistry,
+    chanMgr *channel.Manager,
+    memoryMgr *memory.Manager,
+    cronStore *cron.Store,           // 新增
+    eventStore *structured.EventStore, // 新增
+    ledgerStore *structured.LedgerStore, // 新增
+) *Agent {
+    // ... 原有逻辑不变 ...
+    return &Agent{
+        // ... 原有字段 ...
+        cronStore:   cronStore,
+        eventStore:  eventStore,
+        ledgerStore: ledgerStore,
+    }
+}
+```
+
+### 7.3 agent/registry.go — 透传三个 Store
+
+```go
+func NewRegistry(
+    cfgMgr *config.Manager,
+    store session.Store,
+    chanMgr *channel.Manager,
+    memoryMgr *memory.Manager,
+    cronStore *cron.Store,
+    eventStore *structured.EventStore,
+    ledgerStore *structured.LedgerStore,
+) *Registry {
+    r := &Registry{...}
+    r.reloadAgents(cfgMgr.Get(), store, chanMgr, memoryMgr, cronStore, eventStore, ledgerStore)
+    cfgMgr.OnChange(func(old, new *config.Config) {
+        r.reloadAgents(cfgMgr.Get(), store, chanMgr, memoryMgr, cronStore, eventStore, ledgerStore)
+    })
+    return r
+}
+
+func (r *Registry) reloadAgents(cfg *config.Config, store session.Store, chanMgr *channel.Manager,
+    memoryMgr *memory.Manager, cronStore *cron.Store, eventStore *structured.EventStore, ledgerStore *structured.LedgerStore) {
+    newAgents := make(map[string]*Agent)
+    for _, agentCfg := range cfg.Agents {
+        newAgents[agentCfg.ID] = FromConfig(agentCfg, cfg.AI, store, r.abortReg, chanMgr, memoryMgr, cronStore, eventStore, ledgerStore)
+    }
+    if len(newAgents) == 0 {
+        newAgents["default"] = FromConfig(config.AgentConfig{ID: "default"}, cfg.AI, store, r.abortReg, chanMgr, memoryMgr, cronStore, eventStore, ledgerStore)
+    }
+    r.mu.Lock()
+    r.agents = newAgents
+    r.mu.Unlock()
+}
+```
+
+### 7.4 agent/runner.go — RunReply 动态注册工具
+
+```go
+// RunReply 新增 channelID, accountID, peerID 参数
 func (a *Agent) RunReply(
     parentCtx context.Context,
     sess *session.Session,
     userText string,
     runID string,
     eventCh chan<- AgentEvent,
-    // 新增：
-    channelID, accountID, peerID string,
+    channelID, accountID, peerID string, // 新增
 ) (*RunResult, error) {
-    // ... 原有代码 ...
+    // ... 原有代码（abort注册、AddUserMessage、InjectMemories）...
 
-    // 动态注册提醒工具（绑定当前对话的渠道信息）
-    sessionRegistry := a.toolRegistry.Clone() // 复制一份，避免并发冲突
+    // 克隆全局 Registry，动态注册本次会话专用工具
+    sessionRegistry := a.toolRegistry.Clone()
     builtin.RegisterReminderTools(sessionRegistry, a.cronStore, a.id, channelID, accountID, peerID)
     builtin.RegisterCalendarTools(sessionRegistry, a.eventStore, a.id)
     builtin.RegisterLedgerTools(sessionRegistry, a.ledgerStore, a.id)
 
-    // ... 后续使用 sessionRegistry 而不是 a.toolRegistry ...
+    result, err := a.runWithFallback(ctx, messagesWithMemory, runID, eventCh, sessionRegistry)
+    // ... 原有代码（保存回复、异步提取记忆）...
 }
+
+// runWithFallback 和 runAttempt 新增 registry 参数
+func (a *Agent) runWithFallback(
+    ctx context.Context,
+    messages []ai.Message,
+    runID string,
+    eventCh chan<- AgentEvent,
+    registry *tools.Registry, // 新增
+) (*RunResult, error) {
+    // ... 透传 registry 给 runAttempt ...
+}
+
+func (a *Agent) runAttempt(
+    ctx context.Context,
+    modelRef ModelRef,
+    messages []ai.Message,
+    runID string,
+    eventCh chan<- AgentEvent,
+    registry *tools.Registry, // 新增，替代 a.toolRegistry
+) (*RunResult, error) {
+    // 原来：agentTools := a.toolRegistry.FilterForAgent(a.id)
+    // 改为：
+    agentTools := registry.FilterForAgent(a.id)
+    // ... 其余不变 ...
+}
+```
+
+### 7.5 gateway/chat.go — 传入渠道信息
+
+`RunReply` 的两个调用点都需要补上 channelID/accountID/peerID：
+
+```go
+// Send（WebSocket RPC 调用，渠道信息从 sess.Key 取）
+ag.RunReply(ctx, sess, params.Text, params.RunID, eventCh,
+    sess.Key.ChannelID, sess.Key.AccountID, sess.Key.PeerID)
+
+// InboundHandler（渠道主动推入，渠道信息从 msg 取）
+ag.RunReply(ctx, sess, msg.Text, runID, eventCh,
+    msg.ChannelID, msg.AccountID, msg.PeerID)
 ```
 
 ---
 
 ## 第八步：main.go 集成
 
+Phase 8 的 memory 已有独立 DB 文件（`memory.db`），不动它。
+cron + structured 共用一个新文件 `data.db`：
+
 ```go
 // main.go 关键变更
 
-// 共享同一个 SQLite db 实例
-db, err := sql.Open("sqlite", "file:goclaw.db?_journal_mode=WAL")
+// memory DB（Phase 8 已有，保持不动）
+memStore, err := memory.NewSQLiteStore(cfg.Memory.Dir + "/memory.db")
+memoryMgr := memory.NewManager(memStore)
 
-// 初始化各 Store
-cronStore, _    := cron.NewStore(db)
-eventStore, _   := structured.NewEventStore(db)
-ledgerStore, _  := structured.NewLedgerStore(db)
+// data DB（新增：cron + structured 共用）
+dataDB, err := sql.Open("sqlite", fmt.Sprintf(
+    "file:%s/data.db?_journal_mode=WAL&_busy_timeout=5000",
+    cfg.Memory.Dir,  // 复用同一目录
+))
+cronStore, err    := cron.NewStore(dataDB)
+eventStore, err   := structured.NewEventStore(dataDB)
+ledgerStore, err  := structured.NewLedgerStore(dataDB)
 
-// 初始化 Scheduler
-scheduler := cron.NewScheduler(cronStore, gw)  // gw 实现 Sender 接口
+// 初始化 Scheduler（gateway 实现 Sender 接口）
+scheduler := cron.NewScheduler(cronStore, gw)
 scheduler.Start(ctx)
 
-// Agent 注入新 Store
-// （需要在 agent.FromConfig 或 AgentRegistry 里传入）
+// AgentRegistry 新增三个 Store 参数
+agentReg := agent.NewRegistry(cfgMgr, store, chanMgr, memoryMgr, cronStore, eventStore, ledgerStore)
+```
+
+目录结构：
+```
+.goclaw/
+├── memory.db   ← memory（Phase 8，保持不动）
+└── data.db     ← cron + structured（新增）
 ```
 
 ---

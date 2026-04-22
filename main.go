@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"goclaw/internal/agent"
 	"goclaw/internal/channel"
 	"goclaw/internal/config"
+	"goclaw/internal/cron"
 	"goclaw/internal/gateway"
 	"goclaw/internal/memory"
 	"goclaw/internal/session"
+	"goclaw/internal/structured"
 	"log"
 	"os"
 	"os/signal"
@@ -41,6 +45,26 @@ func main() {
 	}
 	memoryMgr := memory.NewManager(memStore)
 
+	dataDB, err := sql.Open("sqlite", fmt.Sprintf(
+		"file:%s/data.db?_journal_mode=WAL&_busy_timeout=5000",
+		cfg.Memory.Dir,
+	))
+	if err != nil {
+		log.Fatalf("[main] open data.db err: %v", err)
+	}
+	cronStore, err := cron.NewStore(dataDB)
+	if err != nil {
+		log.Fatalf("[main] cron.NewStore err: %v", err)
+	}
+	eventStore, err := structured.NewEventStore(dataDB)
+	if err != nil {
+		log.Fatalf("[main] structured.NewEventStore err: %v", err)
+	}
+	ledgerStore, err := structured.NewLedgerStore(dataDB)
+	if err != nil {
+		log.Fatalf("[main] structured.NewLedgerStore err: %v", err)
+	}
+
 	// 1. 先建 Gateway
 	gw := gateway.New(cfgMgr, store)
 
@@ -51,11 +75,15 @@ func main() {
 	gw.SetChannelManager(chanMgr)
 
 	// 4. 构建agentRgr
-	agentRgr := agent.NewRegistry(cfgMgr, store, chanMgr, memoryMgr)
+	agentRgr := agent.NewRegistry(cfgMgr, store, chanMgr, memoryMgr, cronStore, eventStore, ledgerStore)
+
+	// 5. 启动 Scheduler
+	scheduler := cron.NewScheduler(cronStore, gw)
+	scheduler.Start(ctx)
 
 	gw.SetAgentRegistry(agentRgr)
 
-	// 5. 启动 Telegram 渠道
+	// 6. 启动 Telegram 渠道
 	if err := chanMgr.Start(ctx, "telegram", cfg.Telegram.AccountId, map[string]any{
 		"token": cfg.Telegram.Token,
 	}); err != nil {

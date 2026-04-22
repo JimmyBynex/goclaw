@@ -100,7 +100,8 @@ func (h *ChatHandler) Send(ctx context.Context, raw json.RawMessage) (any, error
 
 	go func() {
 		defer close(eventCh)
-		result, err := ag.RunReply(ctx, sess, params.Text, params.RunID, eventCh)
+		result, err := ag.RunReply(ctx, sess, params.Text, params.RunID, eventCh,
+			sess.Key.ChannelID, sess.Key.AccountID, sess.Key.PeerID)
 		if err != nil {
 			return
 		}
@@ -151,7 +152,8 @@ func (h *ChatHandler) InboundHandler() channel.InBoundHandler {
 		}()
 		go func() {
 			defer close(eventCh)
-			result, err := ag.RunReply(ctx, sess, msg.Text, runID, eventCh)
+			result, err := ag.RunReply(ctx, sess, msg.Text, runID, eventCh,
+				msg.ChannelID, msg.AccountID, msg.PeerID)
 			log.Printf("[gateway] RunReply done: err=%v", err)
 			if err != nil {
 				return

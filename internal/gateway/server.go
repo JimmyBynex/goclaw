@@ -109,3 +109,15 @@ func (g *Gateway) SetAgentRegistry(agentRgr *agent.Registry) {
 func (g *Gateway) SetChannelManager(chanMgr *channel.Manager) {
 	g.chat.chanMgr = chanMgr
 }
+
+func (g *Gateway) ActiveSend(ctx context.Context, channelID, accountID, peerID, text string) error {
+	ch, err := g.chat.chanMgr.Get(channelID, accountID)
+	if err != nil {
+		return fmt.Errorf("active send: channel not found %s/%s: %w", channelID, accountID, err)
+	}
+	_, err = ch.Send(ctx, channel.OutboundMessage{
+		PeerID: peerID,
+		Text:   text,
+	})
+	return err
+}
